@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "dsh-plugin-query-enhance",
+    "description": "Queries the profile's bundles and plugin entries by filter, and keeps plugin_manager list_bundles from returning every bundle's full row list."
+  }
+}

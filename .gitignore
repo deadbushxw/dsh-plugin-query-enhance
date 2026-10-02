@@ -1,0 +1,85 @@
+# =============================================================================
+# dsh-plugin-query-enhance - what must never enter this public repository
+# =============================================================================
+#
+# The rule this file enforces, in one sentence: the published tree contains
+# source code, tests, tooling and documentation, and nothing else.
+#
+# Concretely, the following are kept out, each for a stated reason:
+#
+#   1. internal planning notes  - they quote the directories of the machine they
+#                                 were written on
+#   2. runtime state            - anything produced by running the plugin or by
+#                                 installing it into a profile
+#   3. dependencies and builds  - reproducible from package.json, noise in a diff
+#   4. credentials and env      - never, under any circumstance
+#   5. editor and OS noise      - not part of the project
+#
+# `npm run verify-boundary` re-checks the tracked set against these rules and
+# fails on anything that looks like a local absolute path or a secret. Run it
+# before every push; a green run is the evidence that this file is complete.
+
+# --- 1. internal planning notes ----------------------------------------------
+# Written on one specific machine, so they name its directories. Keep the design
+# locally, or rewrite it without machine paths, before publishing it.
+/DESIGN.md
+/docs/
+
+# --- 2. runtime state --------------------------------------------------------
+# This plugin writes nothing into its own directory: it has no configuration file
+# and no settings page, and everything it reads comes from the Host. These
+# patterns are a second line of defence against a hand-copied file.
+/config.json
+/config.local.json
+/config.*.json
+/secrets.json
+/plugin-data/
+*.log
+npm-debug.log*
+
+# --- 3. dependencies, builds, lockfiles --------------------------------------
+# Installation is owned by DSH's `install_bundle` (pnpm). A second, npm-authored
+# lockfile here would only describe a different resolver and create drift.
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+.npm/
+.pnpm-store/
+coverage/
+dist/
+build/
+*.tsbuildinfo
+
+# --- 4. credentials and local environment ------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.kdbx
+.credentials.yaml
+credentials.json
+secrets.yaml
+
+# --- 5. editor and OS noise ---------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# --- 6. local scratch and backups --------------------------------------------
+# Profile backups and rollback material produced while installing the bundle.
+*.bak
+*.bak-*
+*.orig
+*.rej
+/.dsh-tmp/
+/tmp/

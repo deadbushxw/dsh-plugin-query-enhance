@@ -1,0 +1,22 @@
+# Attributes that keep the published tree byte-stable for every clone.
+#
+# This package is plain JavaScript with no build step, so the only real job here
+# is line endings: normalise everything to LF in the repository and let the
+# checkout convert on platforms that want it. No file here depends on a specific
+# encoding or BOM.
+* text=auto
+
+*.js text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.svg text eol=lf
+
+# Binary assets: never diff, never convert.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary

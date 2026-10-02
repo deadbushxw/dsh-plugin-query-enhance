@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "dsh-plugin-query-enhance",
+    "description": "按条件查询 profile 里的 bundle 与插件条目，并让 plugin_manager list_bundles 不再回传每个 bundle 的完整行清单。"
+  }
+}

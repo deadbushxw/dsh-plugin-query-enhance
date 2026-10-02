@@ -1,0 +1,16 @@
+# dsh-plugin-query-enhance - the Loader rows this bundle contributes.
+#
+# This file is the whole reason the package is installable as a bundle: DSH reads
+# dsh.bundle.patch from package.json, applies these rows to the active profile,
+# and then loads the package by name. Install it with the in-app Plugins page or
+# with plugin_manager install_bundle; never hand-edit the profile's own patch.
+#
+# config: holds this plugin's settings, validated against the Config schema that
+# lib/config.js exports. Every field is optional; the empty object means "use the
+# schema defaults". To change a value, edit it here and reinstall the bundle -
+# there is no settings page and no config file, by design: a value that lives in
+# the repository is a value that can end up in a commit.
+- insert:
+    - id: dsh-plugin-query-enhance
+      name: 'dsh-plugin-query-enhance'
+      config: {}

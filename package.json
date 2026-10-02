@@ -1,0 +1,52 @@
+{
+  "name": "dsh-plugin-query-enhance",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "DSH Host plugin: ask for the current profile's bundles or plugin entries by name, state, or module, and keep plugin_manager list_bundles from returning every bundle's full declared-row list.",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "bundle",
+    "plugin-manager",
+    "context",
+    "tokens"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "icon": "./icon.svg",
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "locale",
+    "icon.svg",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\"",
+    "verify-boundary": "node tools/verify-repo-boundary.mjs"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "~3.18.4"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deadbushxw/dsh-plugin-query-enhance.git"
+  },
+  "homepage": "https://github.com/deadbushxw/dsh-plugin-query-enhance",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
