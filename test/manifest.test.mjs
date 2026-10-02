@@ -44,7 +44,7 @@ test('every path the published package promises exists', () => {
     assert.ok(existsSync(join(ROOT, entry)), entry + ' is listed in files but missing');
   }
   assert.ok(pkg.files.includes('README.md'), 'a public repository needs its README published');
-  assert.ok(pkg.files.includes('README.zh.md'), 'the Chinese README is part of the published set');
+  assert.ok(pkg.files.includes('README.en.md'), 'the English README is part of the published set');
 });
 
 test('the test suite runs without installing anything', () => {

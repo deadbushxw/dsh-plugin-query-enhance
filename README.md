@@ -1,135 +1,126 @@
 # dsh-plugin-query-enhance
 
-[English](README.md) | [中文](README.zh.md)
+[English](README.en.md) | [中文](README.md)
 
-A Host-side [DeepSeek Harness](https://github.com/deepseek-ai) plugin that makes
-asking about the current profile's bundles cheap.
+一个 DSH Host 侧插件，让"查询当前 profile 的 bundle"这件事变便宜。
 
-It does two things, and they are complementary rather than alternatives:
+它做两件事，两者互补而非二选一：
 
-- **It shrinks what the list actions return.** Both `plugin_manager list_bundles`
-  and `plugin_manager list_plugins` are management surfaces, so both answer with
-  more than the caller asked for. `list_bundles` returns every bundle *and* the
-  complete list of plugin rows it declares - a real profile spends most of that
-  payload on two bundles, **86** declared rows for `@deepseek-ai/dsh-base` and **85**
-  for `@deepseek-ai/dsh-web-app`. `list_plugins` returns a page of plugin entries
-  nobody chose. Both now come back as one summary line per record. The projection
-  runs inside the Host, before the payload is serialized, so those bytes are never
-  produced rather than produced and then ignored.
-- **It adds `plugin_query`**, a read-only tool that takes filters and returns only
-  the records that survived them — down to the level of "which bundle declares
-  this module".
+- **给 list 类 action 的返回瘦身。** `plugin_manager list_bundles` 与
+  `plugin_manager list_plugins` 都是管理面，都会回传多于调用方所需的内容。
+  `list_bundles` 回传每个 bundle **以及** 该 bundle 声明的完整插件行清单 —— 实测
+  某个真实 profile 里，这份回传的大头集中在两个 bundle 上：`@deepseek-ai/dsh-base`
+  声明了 **86** 行，`@deepseek-ai/dsh-web-app` 声明了 **85** 行。而 `list_plugins`
+  回传的是一页调用方并没有挑选过的插件条目。现在两者都变成每条记录一行摘要。
+  投影在 Host 内部、序列化之前完成，所以这些字节是**根本没有产生**，而不是产生了
+  再被读者忽略。
+- **新增 `plugin_query`**：一个只读工具，接受过滤条件，只回传通过筛选的记录 —— 精细
+  到"哪个 bundle 声明了这个模块"。
 
-Neither mechanism modifies `@deepseek-ai/dsh-plugin-manager`. The core stays exactly
-as it shipped, the Web Client keeps reading the service directly, and removing
-this bundle restores the previous behaviour completely.
+两条机制都**没有改动 `@deepseek-ai/dsh-plugin-manager`**。核心保持原样，Web 侧边栏
+继续直接读服务，卸载这个 bundle 即完全恢复原有行为。
 
-**Requirements**
+**环境要求**
 
 | | |
 |---|---|
-| OS | any (the plugin is pure JavaScript and touches no platform API) |
-| DSH | a profile whose management plugin exposes the `pluginManager` service |
-| Node.js | 20+ — for the tests and the boundary checker, not to run the plugin |
+| 操作系统 | 不限（插件是纯 JavaScript，不调用任何平台 API） |
+| DSH | profile 中挂载了提供 `pluginManager` 服务的管理插件 |
+| Node.js | 20+ —— 仅测试与边界自查脚本需要，运行插件本身不需要 |
 
-The package name, the repository directory, the Loader row, and the display name
-all use the same identifier — **`dsh-plugin-query-enhance`** — so there is exactly one
-name to search for. Only `package.json` is read by the Loader; the directory name is
-irrelevant.
+包名、仓库目录名、Loader 行 id、显示名统一使用同一个标识 ——
+**`dsh-plugin-query-enhance`** —— 只有一个名字需要检索。Loader 只读
+`package.json`，目录名无关紧要。
 
 ---
 
-## The problem, measured
+## 问题，以及量化
 
-`plugin_manager` has two list actions. Both take `offset` and `limit` and nothing
-else — no name, no state filter, no field selection. The default page size is 25,
-and a profile has about a dozen bundles, so **the first call always returns the
-whole table**. Paging cannot help, because there is nothing to page past.
+`plugin_manager` 有两个 list 动作。两者都只接受 `offset` 与 `limit`，没有按名
+字、按状态、按字段的筛选。默认页大小是 25，而一个 profile 大约十来个 bundle，
+所以**第一次调用就会把整张表取回来**。分页在这里帮不上忙，因为根本没有"下一页"
+可言。
 
-What comes back per bundle is the management record: identity, four state
-booleans, the package description, the full `rows` array of declared plugin
-entries, the built-in rows the bundle overrides, and any error with its
-diagnostics. The `rows` array dominates. Measured on this machine, the declared
-rows of the two bundles above serialized to about **11 KB for 144 rows** — roughly
-76 bytes per row before counting the live entry ids, which add more.
+每个 bundle 回传的是管理记录：标识、四个状态布尔值、包描述、完整的 `rows`
+声明行数组、它覆盖的内置行，以及可能的错误与诊断。其中 `rows` 占绝对大头。在
+本机实测，上面两个 bundle 的声明行序列化后约 **11 KB / 144 行**，约合每行 76
+字节，还没算上会进一步增加的实时 `entryId`。
 
-Two consequences follow, and this plugin answers both:
+由此引出两个后果，本插件分别应对：
 
-| Consequence | Mechanism |
+| 后果 | 对应机制 |
 |---|---|
-| A model that does not know a better tool exists calls `list_bundles` and pays for the whole table | **The projection**: `list_bundles` still answers, but with one summary line per bundle |
-| A model that *does* know what it wants has no way to say so | **`plugin_query`**: filters in the schema, filtering on the host, only matches returned |
+| 模型不知道有更合适的工具，直接调 `list_bundles`，为整张表付费 | **投影**：`list_bundles` 照常可用，但每个 bundle 只回一行摘要 |
+| 模型**清楚**自己要什么，却没有参数可以表达 | **`plugin_query`**：过滤器进入 schema，筛选在 Host 侧完成，只回命中的记录 |
 
 ---
 
-## Install
+## 安装
 
-Installation is a bundle install: DSH writes the package into the active profile,
-registers the Loader row, and hot-applies it. Do not hand-edit the profile.
+安装即 bundle 安装：DSH 会把包写进当前 profile、注册 Loader 行并热应用。不要手工
+编辑 profile。
 
-### 1. Get the code onto the machine
+### 1. 把代码放到机器上
 
 ```sh
 git clone https://github.com/deadbushxw/dsh-plugin-query-enhance "%USERPROFILE%\.dsh\dsh-plugins\dsh-plugin-query-enhance"
 ```
 
-Any directory works; the path above is only an example. There is no build step.
+任何目录都可以，上面的路径只是示例。没有构建步骤。
 
-### 2. Install it into a profile
+### 2. 装进一个 profile
 
-Ask the Agent in the profile you want it in, naming either the cloned directory
-or the repository:
+在目标 profile 里对 Agent 说，可以用克隆下来的目录，也可以直接用仓库地址：
 
-> Install the bundle at `%USERPROFILE%\.dsh\dsh-plugins\dsh-plugin-query-enhance` with
-> `plugin_manager install_bundle`.
+> 用 `plugin_manager install_bundle` 安装
+> `%USERPROFILE%\.dsh\dsh-plugins\dsh-plugin-query-enhance` 这个 bundle。
 
-Or install straight from GitHub, with no clone:
+或者不克隆，直接从 GitHub 安装：
 
-> Install the bundle `github:deadbushxw/dsh-plugin-query-enhance` with
-> `plugin_manager install_bundle`.
+> 用 `plugin_manager install_bundle` 安装
+> `github:deadbushxw/dsh-plugin-query-enhance`。
 
-Or, in the GUI: **Settings → Plugins**, add the package directory as a local
-bundle and enable it.
+也可以在 GUI 里操作：**设置 → 插件**，把该包目录作为本地 bundle 添加并启用。
 
-`plugin_manager` reports `application: "applied"` when the change is live. If it reports
-`restart-required`, restart DSH. Replacing an already-installed package with new
-code also requires a restart, because the Host caches module instances.
+变更生效时 `plugin_manager` 会返回 `application: "applied"`。若返回
+`restart-required`，重启 DSH。用新代码替换已安装的包同样需要重启，因为 Host 会
+缓存模块实例。
 
-### 3. Confirm it works
+### 3. 确认它能用
 
-Ask for the bundles and look at the shape of the answer:
+先请求 bundle 列表，看返回的形状：
 
 ```
 plugin_manager list_bundles
 ```
 
-Every entry now carries `name`, `version`, `enabled`, `installed`, `optional`,
-`removable` and `rowCount` — and no `rows` array, no `description`, no `meta`. Then ask a
-question only the new tool can answer:
+现在每条记录只带 `name`、`version`、`enabled`、`installed`、`optional`、
+`removable` 与 `rowCount`，没有 `rows` 数组、没有 `description`、没有 `meta`。
+再问一个只有新工具能回答的问题：
 
 ```
 plugin_query match="cordis-plugin-hmr"
 ```
 
-Both halves are working when the first answer is one line per bundle and the
-second names the bundle that declares that module.
+第一次回答是每个 bundle 一行、第二次回答指名了声明该模块的 bundle —— 两半都
+在工作。
 
-### Uninstall
+### 卸载
 
 ```
 plugin_manager remove_bundle dsh-plugin-query-enhance
 ```
 
-Nothing is left behind. `list_bundles` goes back to returning the full table.
+不会留下任何残留。`list_bundles` 恢复为回传完整表格。
 
 ---
 
-## Usage
+## 用法
 
-### What the list actions return now
+### 现在 list 类调用回传什么
 
-Neither action changed, including `offset`, `limit`, `total` and `nextOffset`. Only
-each record is smaller. A bundle comes back as: 
+动作本身没变，包括 `offset`、`limit`、`total` 与 `nextOffset`。只是每条记录更小。
+bundle 长这样：
 
 ```json
 {"entries":[{"name":"@deepseek-ai/dsh-web-app","version":"0.1.2-alpha.1","enabled":true,
@@ -137,84 +128,79 @@ each record is smaller. A bundle comes back as:
 "total":11,"nextOffset":null}
 ```
 
-Dropped, and why:
+被去掉的字段，以及为什么可以去掉：
 
-| Field | Why it is safe to drop |
+| 字段 | 为什么可以去掉 |
 |---|---|
-| `rows` | The bulk. Recoverable on demand with `plugin_query includeRows=true`, which returns the rows of the one bundle you name |
-| `description` | The package's own prose, written for a human browsing a package manager |
-| `meta` | Localized display text and icon paths, read by the Web Client, which does not go through this path anyway |
-| `overrides` | The built-in row ids the bundle replaces; summarised as `overrideCount` |
-| `error.diagnostic`, `error.incompatible` | Long-form failure text. The error **code** survives, because that is what decides the next step |
+| `rows` | 大头。需要时用 `plugin_query includeRows=true` 指定单个 bundle 取回 |
+| `description` | 包自带的说明文字，写给在包管理器里浏览的人看 |
+| `meta` | 本地化标题、描述与图标路径，供 Web 客户端渲染；该路径本就不经过这里 |
+| `overrides` | bundle 覆盖的内置行 id；已归结为 `overrideCount` |
+| `error.diagnostic`、`error.incompatible` | 长文本失败详情。错误的 **code** 保留，因为决定下一步的是它 |
 
-Two fields exist only to say what was omitted: `rowCount` is always present, so a
-reader can tell "this bundle declares no plugins" from "this answer hides them",
-and `overrideCount` appears only when the bundle overrides something.
+另有两个字段专门说明"被省略了什么"：`rowCount` 始终存在，使读者能区分"这个
+bundle 不声明任何插件"和"这份回答把声明行藏起来了"；`overrideCount` 仅在确有覆盖
+时出现。
 
-A plugin entry comes back as:
+插件条目长这样：
 
 ```json
 {"entries":[{"entryId":"timer","moduleName":"@deepseek-ai/cordis-plugin-timer",
 "enabled":true,"fiberPhase":"active"}],"total":187,"nextOffset":25}
 ```
 
-`patchId` is the one field that summary drops: it is the profile patch row that
-addresses the entry, which no documented operation takes as an argument.
-`entryId` stays, because it is what `set_plugin` takes, and `readOnlyReason` stays,
-because it explains a refused action.
+摘要唯一丢弃的字段是 `patchId`：它是寻址该条目的 profile patch 行 id，没有任何
+已文档化的操作以它为参数。`entryId` 保留，因为 `set_plugin` 收的就是它；
+`readOnlyReason` 也保留，因为它解释了某个操作被拒绝的原因。
 
-Need the ids to call `set_plugin`? `plugin_query name="..." includeRows=true` returns
-the rows a bundle declares, and a `list_plugins` summary keeps every `entryId`.
-Anything more - the full bundle record, a plugin entry's `patchId`, error
-diagnostics - comes from `plugin_query` with `detail: "full"`, which is the only path
-that returns a complete record.
+需要 id 去调 `set_plugin`？`plugin_query name="..." includeRows=true` 可以取回某个
+bundle 声明的行，而 `list_plugins` 的摘要本身就是带 `entryId` 的。再多的内容 ——
+完整的 bundle 记录、插件条目的 `patchId`、错误诊断 —— 只由 `plugin_query` 配合
+`detail: "full"` 提供，那是唯一会返回完整记录的路径。
 
 ### `plugin_query`
 
-Read-only, takes no arguments that change anything, and needs no approval.
+只读，不接受任何会改变状态的参数，也不需要审批。
 
-| Parameter | Applies to | Meaning |
+| 参数 | 适用范围 | 含义 |
 |---|---|---|
-| `kind` | both | `"bundles"` (default) or `"plugins"`, for individual plugin entries |
-| `name` | bundles | Exact bundle package name, for example `@deepseek-ai/dsh-base` |
-| `match` | both | Case-insensitive substring over the name, the description, and the module names of the rows a bundle declares |
-| `enabled` | both | Keep only records whose saved enabled state equals this |
-| `installed` | bundles | Keep only bundles whose installed state equals this |
-| `optional` | bundles | Keep only bundles shipped switched off for the user to turn on |
-| `hasError` | bundles | `true` keeps only bundles that failed to load; `false` keeps only the ones that loaded |
-| `detail` | both | `"summary"` (default) or `"full"`, the management record including description and rows |
-| `includeRows` | bundles | In a summary, also include the declared plugin rows |
-| `limit` | both | Page size, 1 to 100. Defaults to **10** |
-| `offset` | both | Zero-based offset into the **filtered** result. Defaults to 0 |
+| `kind` | 两者 | `"bundles"`（默认）或 `"plugins"`，后者查询单个插件条目 |
+| `name` | bundles | 精确的 bundle 包名，例如 `@deepseek-ai/dsh-base` |
+| `match` | 两者 | 不区分大小写的子串，匹配包名、描述，以及 bundle 声明行的模块名 |
+| `enabled` | 两者 | 只保留保存的启用状态等于该值的记录 |
+| `installed` | bundles | 只保留已安装状态等于该值的 bundle |
+| `optional` | bundles | 只保留"出厂关闭、供用户自行开启"的 bundle |
+| `hasError` | bundles | `true` 只保留加载失败的；`false` 只保留加载正常的 |
+| `detail` | 两者 | `"summary"`（默认）或 `"full"`，后者是含描述与声明行的管理记录 |
+| `includeRows` | bundles | 在摘要中一并带上声明的插件行 |
+| `limit` | 两者 | 页大小，1 到 100，默认 **10** |
+| `offset` | 两者 | 在**筛选后**结果中的零基偏移，默认 0 |
 
-Filters combine with **AND**. Supplying a bundle-only filter with
-`kind: "plugins"` is an error rather than a silently ignored condition, and so is an
-empty `name` or `match` — an empty filter would quietly match everything, which is
-the outcome this package exists to prevent.
+多个条件之间是 **AND**。`kind: "plugins"` 搭配 bundle 专用过滤器会报错，而不是被
+静默忽略；`name` 或 `match` 传空串同样报错 —— 空过滤器会悄悄匹配一切，而这正是
+本包要避免的结果。
 
-Every answer carries `total` (the inventory size), `matched` (how many survived the
-filters), and `nextOffset`. The pair `total`/`matched` is what makes a zero result
-unambiguous: `matched: 0` with `total: 11` means the bundle exists and was filtered
-out, and there is no need to repeat the call without filters to find out.
+每次回答都带 `total`（清单总量）、`matched`（通过筛选的数量）与 `nextOffset`。
+`total`/`matched` 这组字段让"零结果"不再有歧义：`matched: 0` 而 `total: 11` 意味着
+bundle 存在但被筛掉了，不必为了确认这一点再发一次不带条件的调用。
 
-Examples:
+示例：
 
 ```
 plugin_query name="@deepseek-ai/dsh-base"
-plugin_query match="cordis-plugin-hmr"          # which bundle declares this module?
-plugin_query enabled=false                        # what is switched off?
-plugin_query hasError=true detail="full"          # why did something fail to load?
-plugin_query optional=true                        # what was shipped switched off?
+plugin_query match="cordis-plugin-hmr"          # 哪个 bundle 声明了这个模块？
+plugin_query enabled=false                        # 哪些是关闭的？
+plugin_query hasError=true detail="full"          # 某个东西为什么加载失败？
+plugin_query optional=true                        # 哪些是出厂关闭的？
 plugin_query kind="plugins" enabled=false limit=50
 ```
 
 ---
 
-## Configuration
+## 配置
 
-There is no configuration file and no settings page. Both settings live in the
-bundle's own `cordis.patch.yml`, which is validated against the `Config` schema the
-package exports. Edit it there and reinstall the bundle.
+没有配置文件，也没有设置页。两项设置都在该 bundle 自己的 `cordis.patch.yml` 里，
+由包导出的 `Config` schema 校验。改这里并重新安装该 bundle。
 
 ```yaml
 - insert:
@@ -225,145 +211,128 @@ package exports. Edit it there and reinstall the bundle.
         defaultDetail: summary
 ```
 
-| Field | Default | Meaning |
+| 字段 | 默认值 | 含义 |
 |---|---|---|
-| `intercept` | `true` | Project `plugin_manager list_bundles` results. Set to `false` to keep the tool but stop rewriting that action's output |
-| `defaultDetail` | `"summary"` | The detail level `plugin_query` applies when a call omits `detail` |
+| `intercept` | `true` | 是否对 `plugin_manager list_bundles` 的结果做投影。设为 `false` 可保留工具但不再改写该动作的输出 |
+| `defaultDetail` | `"summary"` | 调用未指定 `detail` 时 `plugin_query` 采用的详细级别 |
 
 ---
 
-## How it works
+## 实现方式
 
-Two extension points, no fork:
+两个扩展点，不 fork：
 
-| Mechanism | Extension point | Why this one |
+| 机制 | 扩展点 | 为什么选它 |
 |---|---|---|
-| The projection | `tools/post-execute` | The tool runtime documents it as the place to transform a result, and it is the only plugin-reachable point that can change what a model receives from another tool. It targets both list actions, because which one a caller reaches for is not predictable |
-| The query tool | `ctx.tools.register()` plus the `pluginManager` service | Adding a tool cannot collide with anything, and the service is what the management tool itself reads |
+| 投影 | `tools/post-execute` | 工具运行时把它文档化为"转换结果"的位置，也是插件能触及的、唯一能改变模型从**另一个**工具收到什么的点。它同时覆盖两个 list action，因为调用方会挑哪一个无法预判 |
+| 查询工具 | `ctx.tools.register()` 加 `pluginManager` 服务 | 新增工具不会与任何东西冲突；而该服务正是管理工具自己读取的来源 |
 
-Three decisions worth stating, because each is a deliberate trade:
+三个值得说明的取舍：
 
-- **The projection calls `next()` before it decides anything**, even for the calls it
-  rewrites. A waterfall listener that returns a decision without delegating ends
-  the chain for every listener behind it — for instance a tool-hook plugin that
-  would have logged or blocked the call. Refining whatever the rest of the chain
-  settled on, and deferring when it already replaced the result, keeps other
-  plugins' decisions intact.
-- **A payload it cannot parse is passed through untouched.** A projection that
-  cannot run must cost the caller nothing, never break a working management call.
-  The same guard covers a future Host that changes the envelope.
-- **The tool is defined with the raw JSON Schema the registry enforces**, not
-  through the first-party `defineTool` helper. That helper lives in
-  `@deepseek-ai/dsh-tools`; importing it would pin this package to a Host package
-  at a version, so a clone would need a registry round trip before it could load
-  and a Host upgrade could desynchronize the two copies. The registry's documented
-  contract is `ctx.tools.register()`, and it takes the compiled form. The cost is
-  that argument validation, which the helper would install, is written here and
-  tested instead.
+- **投影在做出任何判断之前先调用 `next()`**，即使是对它要改写的调用。一个不向下
+  委托就返回决定的 waterfall 监听器会终止它身后整条链 —— 比如一个本该记录或拦截
+  该调用的工具钩子插件。改写"整条链最终达成的决定"，并在别人已经替换结果时让位，
+  才能保住其他插件的决定。
+- **无法解析的载荷原样放行。** 一个跑不起来的投影必须对调用方零成本，绝不能破坏
+  一次本来可用的管理调用。同一道护栏也覆盖未来改变信封结构的 Host。
+- **工具用注册表实际校验的原始 JSON Schema 定义**，而不是走官方 `defineTool` 辅助
+  函数。那个辅助函数住在 `@deepseek-ai/dsh-tools` 里，引入它会让本包绑死在某个
+  Host 包的某个版本上：克隆下来要先联网解析依赖才能加载，Host 升级还可能让两份副本
+  失去同步。注册表公开的契约是 `ctx.tools.register()`，而它接收的正是编译后的形式。
+  代价是辅助函数本该安装的参数校验，改由这里手写并测试覆盖。
 
 ---
 
-## Repository boundary
+## 仓库边界
 
-**This repository is safe to publish as-is, and this section is the contract that
-makes that checkable rather than a claim.**
+**这个仓库可以直接公开发布，而本节是让这句话可被检验、而不是一句声明的契约。**
 
-### What is committed
+### 提交什么
 
-Source, tests, tooling, documentation, and metadata:
+源码、测试、工具脚本、文档与元数据：
 
 ```
 .gitattributes  .gitignore  LICENSE
-README.md  README.zh.md
+README.md  README.en.md
 package.json  cordis.patch.yml
 icon.svg  locale/{en,zh}.json
-lib/**                 the plugin itself
-test/**                the test suite, runnable with no install
-tools/verify-repo-boundary.mjs   the check described below
+lib/**                 插件本体
+test/**                测试套件，无需安装即可运行
+tools/verify-repo-boundary.mjs   下文所述的边界自查脚本
 ```
 
-### What is deliberately not committed
+### 有意不提交什么
 
-| Kept out | Why |
+| 排除项 | 原因 |
 |---|---|
-| `DESIGN.md` | Internal working notes. They quote the absolute directories of the machine they were written on, so publishing them would leak that machine's layout |
-| `node_modules/` | Reproducible from `package.json`; noise in a diff |
-| `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock` | Installation is owned by DSH's `install_bundle` (pnpm). A second lockfile would describe a different resolver and drift |
-| `*.bak`, `*.orig`, `*.rej`, `*.log` | Local scratch left by editing and installing |
-| `config.json`, `plugin-data/`, `.env*`, `*.pem`, `*.key`, `.credentials.yaml` | Runtime state and credentials. This plugin has neither, and the patterns are a second line of defence |
-| editor and OS noise (`.vscode/`, `.DS_Store`, `Thumbs.db`, …) | Not part of the project |
+| `DESIGN.md` | 内部工作稿。其中引用了撰写时所在机器的绝对目录，发布即泄露该机器的布局 |
+| `node_modules/` | 可由 `package.json` 复现；在 diff 里只是噪声 |
+| `package-lock.json`、`pnpm-lock.yaml`、`yarn.lock` | 安装由 DSH 的 `install_bundle`（pnpm）负责。多一份锁文件只会描述另一个解析器并造成漂移 |
+| `*.bak`、`*.orig`、`*.rej`、`*.log` | 编辑与安装过程中留下的本地临时产物 |
+| `config.json`、`plugin-data/`、`.env*`、`*.pem`、`*.key`、`.credentials.yaml` | 运行状态与凭据。本插件两样都没有，这些模式是第二道防线 |
+| 编辑器与系统噪声（`.vscode/`、`.DS_Store`、`Thumbs.db` 等） | 不属于本项目 |
 
-There are no secrets of any kind in this project: it stores no account, no token,
-and no API key, and it makes no network requests.
+本项目不含任何密钥：它不保存账号、令牌或 API key，也不发起网络请求。
 
-### How to verify the boundary yourself
+### 自己验证这条边界
 
 ```sh
 npm run verify-boundary
 ```
 
-`verify-boundary` reads the set of files **git would publish** (`git ls-files`), not
-the working tree — untracked local files are precisely what the boundary is meant
-to keep out. It reports machine-specific absolute paths, credential-shaped text,
-runtime state, and unexpectedly large files, and it exits non-zero on anything it
-finds. Run it before every push.
+`verify-boundary` 读取的是 **git 会发布的文件集合**（`git ls-files`），而不是工作
+区：未被跟踪的本地文件正是这条边界要挡住的东西。它会报告机器相关的绝对路径、
+凭据形态的文本、运行状态与异常大文件，并在发现任何问题时以非零码退出。每次推送
+前运行一次。
 
 ---
 
-## Development
+## 开发
 
 ```sh
-npm test        # the whole suite; no install needed
+npm test        # 全部测试；无需安装
 npm run verify-boundary
 ```
 
-The suite has no dependencies and no side effects: it never touches the
-filesystem, the network, or a Host. That is not an accident — `lib/config.js` is
-import-free on purpose, and the one runtime dependency lives alone in
-`lib/schema.js`, so nothing the tests import has to be resolved.
-`npm install` is only needed if you want to load `lib/index.js` itself.
+测试套件没有任何依赖，也没有副作用：它不碰文件系统、不联网、不接触 Host。这并非
+偶然 —— `lib/config.js` 刻意不 import 任何东西，唯一的运行时依赖单独放在
+`lib/schema.js`，因此测试所引入的模块都不需要解析依赖。只有当你想加载
+`lib/index.js` 本身时，才需要 `npm install`。
 
-Structure, and why it is split this way:
+结构与拆分理由：
 
-| File | Responsibility |
+| 文件 | 职责 |
 |---|---|
-| `lib/index.js` | Entry point. Wires the waterfall listener and the tool, owns teardown |
-| `lib/config.js` | Constants and effective settings. Imports nothing |
-| `lib/schema.js` | The `Config` schema. The only file with a dependency |
-| `lib/shape.js` | Display-metadata stripping, shared by both mechanisms |
-| `lib/project.js` | Mechanism 1: summarize a whole list payload, either action |
-| `lib/intercept.js` | Mechanism 1: the `tools/post-execute` listener |
-| `lib/filter.js` | Mechanism 2: the query engine |
-| `lib/tool.js` | Mechanism 2: the tool definition and its argument contract |
+| `lib/index.js` | 入口。接上 waterfall 监听器与工具，并负责拆除 |
+| `lib/config.js` | 常量与生效设置。不引任何东西 |
+| `lib/schema.js` | `Config` schema。唯一带依赖的文件 |
+| `lib/shape.js` | 剥离展示元数据，两条机制共用 |
+| `lib/project.js` | 机制一：把整份 list 载荷归结为摘要，两个 action 共用 |
+| `lib/intercept.js` | 机制一：`tools/post-execute` 监听器 |
+| `lib/filter.js` | 机制二：查询引擎 |
+| `lib/tool.js` | 机制二：工具定义与参数契约 |
 
 ---
 
-## Known limitations
+## 已知限制
 
-- **The management tool's own schema cannot be extended.** A plugin cannot add
-  parameters to a tool another plugin registered, so the list actions can only be
-  *shrunk* by default, never filtered. That is what `plugin_query` is for; the
-  projection is the safety net for a caller that reaches for the old tool anyway.
-- **`list_plugins` is already partly summarised by the management tool**, which
-  drops display metadata before returning. The projection there removes `patchId`
-  and keeps the same envelope, so the reduction is real but modest; the large win
-  remains `list_bundles`.
-- **`detail: "full"` on a bundle with many declared rows is still large.** It is the
-  management record by design. A `match` narrows the rows to the ones it hit, which
-  is usually what makes it affordable.
-- **`plugin_query` disappears if the `pluginManager` service is absent.** The
-  projection half stays active; the tool is simply not registered. Look for the
-  plugin's own debug line to tell the two apart.
-- **The tool adds a small fixed cost to every request.** Its schema and
-  description are sent whether or not it is used. The description is kept short
-  for that reason, and the projection half adds nothing at all.
-- **No settings page.** Both settings are row configuration, edited in
-  `cordis.patch.yml`. Adding a page would mean marking fields volatile and
-  shipping a Client half, which is more moving parts than two booleans justify.
-- **The projection is a policy, not a filter.** It decides what `list_bundles`
-  returns in the absence of a better question. `intercept: false` restores the
-  original behaviour exactly.
+- **无法扩展管理工具自身的 schema。** 插件不能给另一个插件注册的工具加参数，所以
+  list 类调用只能被默认**瘦身**，无法被过滤。过滤是 `plugin_query` 的职责；投影是
+  给"仍然伸手去够老工具"的调用方准备的兜底。
+- **`list_plugins` 本来就被管理工具剥掉了一层。** 它在返回前已去掉展示元数据；
+  投影在这里再去掉 `patchId` 并保持同一信封，所以收益真实但有限，大头仍然是
+  `list_bundles`。
+- **对声明行很多的 bundle，`detail: "full"` 依然很大。** 它按定义就是管理记录。用
+  `match` 可以把行收窄到命中的那些，通常这才让它变得可负担。
+- **若 `pluginManager` 服务不存在，`plugin_query` 不会出现。** 投影那一半照常工作，
+  只是不注册该工具。可通过插件自身的 debug 日志区分这两种情况。
+- **该工具会给每次请求增加一点固定开销。** 无论是否使用，它的 schema 与描述都会
+  被发送。描述刻意写短正是为此；而投影那一半零开销。
+- **没有设置页。** 两项设置都是行配置，在 `cordis.patch.yml` 中修改。加一个设置页
+  意味着把字段标记为 volatile 并附带一个客户端半边，对两个布尔值来说动静太大。
+- **投影是策略，不是过滤器。** 它决定的是"没有更好的问法时 `list_bundles` 回传
+  什么"。`intercept: false` 可精确恢复原行为。
 
-## License
+## 许可证
 
-[MIT](LICENSE) © 2026 deadbushxw.
+[MIT](LICENSE) © 2026 deadbushxw。
