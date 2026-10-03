@@ -10,9 +10,10 @@ It does two things, and they are complementary rather than alternatives:
 - **It shrinks what the list actions return.** Both `plugin_manager list_bundles`
   and `plugin_manager list_plugins` are management surfaces, so both answer with
   more than the caller asked for. `list_bundles` returns every bundle *and* the
-  complete list of plugin rows it declares - a real profile spends most of that
-  payload on two bundles, **86** declared rows for `@deepseek-ai/dsh-base` and **85**
-  for `@deepseek-ai/dsh-web-app`. `list_plugins` returns a page of plugin entries
+  complete list of plugin rows it declares - a real profile (DSH 0.2.0-rc.2) spends
+  most of that payload on two bundles: **94** declared rows for
+  `@deepseek-ai/dsh-base` and **89** for `@deepseek-ai/dsh-web-app`. `list_plugins`
+  returns a page of plugin entries
   nobody chose. Both now come back as one summary line per record. The projection
   runs inside the Host, before the payload is serialized, so those bytes are never
   produced rather than produced and then ignored.
@@ -43,15 +44,17 @@ irrelevant.
 
 `plugin_manager` has two list actions. Both take `offset` and `limit` and nothing
 else — no name, no state filter, no field selection. The default page size is 25,
-and a profile has about a dozen bundles, so **the first call always returns the
+and a profile has about twenty bundles, so **the first call always returns the
 whole table**. Paging cannot help, because there is nothing to page past.
 
 What comes back per bundle is the management record: identity, four state
 booleans, the package description, the full `rows` array of declared plugin
 entries, the built-in rows the bundle overrides, and any error with its
-diagnostics. The `rows` array dominates. Measured on this machine, the declared
-rows of the two bundles above serialized to about **11 KB for 144 rows** — roughly
-76 bytes per row before counting the live entry ids, which add more.
+diagnostics. The `rows` array dominates: the whole table declares **247** rows, and
+**183** of them — 74% — sit on the two bundles above (94 + 89, measured on
+DSH 0.2.0-rc.2), each carrying a `rowId`, a `moduleName`, and the live `entryId`.
+After the projection each of those bundles is one summary line in `list_bundles` —
+the declared rows are never serialized at all.
 
 Two consequences follow, and this plugin answers both:
 
@@ -73,7 +76,8 @@ registers the Loader row, and hot-applies it. Do not hand-edit the profile.
 git clone https://github.com/deadbushxw/dsh-plugin-query-enhance "%USERPROFILE%\.dsh\dsh-plugins\dsh-plugin-query-enhance"
 ```
 
-Any directory works; the path above is only an example. There is no build step.
+Any directory works; the path above is only an example. There is no **build** step,
+but there is one **dependency install** (see step 3).
 
 ### 2. Install it into a profile
 
@@ -95,7 +99,33 @@ bundle and enable it.
 `restart-required`, restart DSH. Replacing an already-installed package with new
 code also requires a restart, because the Host caches module instances.
 
-### 3. Confirm it works
+### 3. Install the runtime dependency
+
+This package has one runtime dependency, `@deepseek-ai/schemastery`, and it is
+**not** in the repository (see "What is deliberately not committed"). **With the
+first install route above — a clone in a local directory — this step is required.**
+In the clone directory, run:
+
+```sh
+npm install --no-audit --no-fund
+```
+
+Skipping it fails silently: `install_bundle` reports success and `npm test` is
+green, but the plugin never loads — `lib/schema.js`, imported statically by
+`lib/index.js`, cannot resolve the dependency, so the module graph fails as a
+whole, `apply()` never runs, and the projection and `plugin_query` both go
+missing with no error reported anywhere. One usable tell: in
+`plugin_manager list_plugins`, this entry is the only `enabled: true` row with
+`fiberPhase: null` (compare step 4).
+
+After installing the dependency, restart DSH to load it: Node's ESM module cache
+has already recorded the failed load and the Loader does not retry it.
+
+The second route above (`github:` repository spec) does not need this step: the
+plugin is installed into the profile's own `node_modules`, where the dependencies
+it needs are already present.
+
+### 4. Confirm it works
 
 Ask for the bundles and look at the shape of the answer:
 
@@ -104,11 +134,13 @@ plugin_manager list_bundles
 ```
 
 Every entry now carries `name`, `version`, `enabled`, `installed`, `optional`,
-`removable` and `rowCount` — and no `rows` array, no `description`, no `meta`. Then ask a
-question only the new tool can answer:
+`removable` and `rowCount` — plus `readOnlyReason` when the bundle is read-only,
+`overrideCount` when it overrides rows, and `error` reduced to its code string.
+There is no `rows` array, no `description`, and no `meta`. Then ask a question
+only the new tool can answer:
 
 ```
-plugin_query match="cordis-plugin-hmr"
+plugin_query match="@deepseek-ai/dsh-plugin-manager"
 ```
 
 Both halves are working when the first answer is one line per bundle and the
@@ -129,12 +161,14 @@ Nothing is left behind. `list_bundles` goes back to returning the full table.
 ### What the list actions return now
 
 Neither action changed, including `offset`, `limit`, `total` and `nextOffset`. Only
-each record is smaller. A bundle comes back as: 
+each record is smaller. A bundle comes back as (the output of
+`plugin_manager list_bundles limit=1` on DSH 0.2.0-rc.2, rewrapped for readability):
 
 ```json
-{"entries":[{"name":"@deepseek-ai/dsh-web-app","version":"0.1.2-alpha.1","enabled":true,
-"installed":false,"optional":false,"removable":false,"rowCount":85}],
-"total":11,"nextOffset":null}
+{"entries":[{"name":"@deepseek-ai/dsh-base","version":"0.2.0-rc.2","enabled":true,
+"installed":false,"optional":false,"removable":false,
+"readOnlyReason":"management-required","rowCount":94}],
+"total":21,"nextOffset":1}
 ```
 
 Dropped, and why:
@@ -151,11 +185,13 @@ Two fields exist only to say what was omitted: `rowCount` is always present, so 
 reader can tell "this bundle declares no plugins" from "this answer hides them",
 and `overrideCount` appears only when the bundle overrides something.
 
-A plugin entry comes back as:
+A plugin entry comes back as (the output of `plugin_manager list_plugins limit=1` on
+the same machine, rewrapped for readability):
 
 ```json
-{"entries":[{"entryId":"timer","moduleName":"@deepseek-ai/cordis-plugin-timer",
-"enabled":true,"fiberPhase":"active"}],"total":187,"nextOffset":25}
+{"entries":[{"entryId":"96732430","moduleName":"@deepseek-ai/dsh-host-directory-picker-native",
+"enabled":true,"fiberPhase":"active","readOnlyReason":"unaddressable"}],
+"total":202,"nextOffset":1}
 ```
 
 `patchId` is the one field that summary drops: it is the profile patch row that
@@ -194,14 +230,14 @@ the outcome this package exists to prevent.
 
 Every answer carries `total` (the inventory size), `matched` (how many survived the
 filters), and `nextOffset`. The pair `total`/`matched` is what makes a zero result
-unambiguous: `matched: 0` with `total: 11` means the bundle exists and was filtered
+unambiguous: `matched: 0` with `total: 21` means the bundle exists and was filtered
 out, and there is no need to repeat the call without filters to find out.
 
 Examples:
 
 ```
 plugin_query name="@deepseek-ai/dsh-base"
-plugin_query match="cordis-plugin-hmr"          # which bundle declares this module?
+plugin_query match="@deepseek-ai/dsh-plugin-manager"   # which bundle declares this module?
 plugin_query enabled=false                        # what is switched off?
 plugin_query hasError=true detail="full"          # why did something fail to load?
 plugin_query optional=true                        # what was shipped switched off?
@@ -288,7 +324,7 @@ tools/verify-repo-boundary.mjs   the check described below
 |---|---|
 | `DESIGN.md` | Internal working notes. They quote the absolute directories of the machine they were written on, so publishing them would leak that machine's layout |
 | `node_modules/` | Reproducible from `package.json`; noise in a diff |
-| `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock` | Installation is owned by DSH's `install_bundle` (pnpm). A second lockfile would describe a different resolver and drift |
+| `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock` | The dependency is installed by the user running `npm install` in the plugin directory (see Install, step 3). DSH's `install_bundle` owns only the profile's own dependencies and never installs into a `link:` target directory; a second lockfile would describe a different resolver and drift |
 | `*.bak`, `*.orig`, `*.rej`, `*.log` | Local scratch left by editing and installing |
 | `config.json`, `plugin-data/`, `.env*`, `*.pem`, `*.key`, `.credentials.yaml` | Runtime state and credentials. This plugin has neither, and the patterns are a second line of defence |
 | editor and OS noise (`.vscode/`, `.DS_Store`, `Thumbs.db`, …) | Not part of the project |
@@ -320,8 +356,9 @@ npm run verify-boundary
 The suite has no dependencies and no side effects: it never touches the
 filesystem, the network, or a Host. That is not an accident — `lib/config.js` is
 import-free on purpose, and the one runtime dependency lives alone in
-`lib/schema.js`, so nothing the tests import has to be resolved.
-`npm install` is only needed if you want to load `lib/index.js` itself.
+`lib/schema.js`, so nothing the tests import has to be resolved. `npm test` needs
+no install at all — but running the plugin for real (or loading `lib/index.js`)
+requires `npm install` first (see Install, step 3).
 
 Structure, and why it is split this way:
 

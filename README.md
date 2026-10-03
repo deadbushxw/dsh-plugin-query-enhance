@@ -9,8 +9,9 @@
 - **给 list 类 action 的返回瘦身。** `plugin_manager list_bundles` 与
   `plugin_manager list_plugins` 都是管理面，都会回传多于调用方所需的内容。
   `list_bundles` 回传每个 bundle **以及** 该 bundle 声明的完整插件行清单 —— 实测
-  某个真实 profile 里，这份回传的大头集中在两个 bundle 上：`@deepseek-ai/dsh-base`
-  声明了 **86** 行，`@deepseek-ai/dsh-web-app` 声明了 **85** 行。而 `list_plugins`
+  某个真实 profile 里（DSH 0.2.0-rc.2），这份回传的大头集中在两个 bundle 上：
+  `@deepseek-ai/dsh-base` 的声明行有 **94** 条，`@deepseek-ai/dsh-web-app` 有
+  **89** 条。而 `list_plugins`
   回传的是一页调用方并没有挑选过的插件条目。现在两者都变成每条记录一行摘要。
   投影在 Host 内部、序列化之前完成，所以这些字节是**根本没有产生**，而不是产生了
   再被读者忽略。
@@ -37,14 +38,16 @@
 ## 问题，以及量化
 
 `plugin_manager` 有两个 list 动作。两者都只接受 `offset` 与 `limit`，没有按名
-字、按状态、按字段的筛选。默认页大小是 25，而一个 profile 大约十来个 bundle，
+字、按状态、按字段的筛选。默认页大小是 25，而一个 profile 大约二十来个 bundle，
 所以**第一次调用就会把整张表取回来**。分页在这里帮不上忙，因为根本没有"下一页"
 可言。
 
 每个 bundle 回传的是管理记录：标识、四个状态布尔值、包描述、完整的 `rows`
-声明行数组、它覆盖的内置行，以及可能的错误与诊断。其中 `rows` 占绝对大头。在
-本机实测，上面两个 bundle 的声明行序列化后约 **11 KB / 144 行**，约合每行 76
-字节，还没算上会进一步增加的实时 `entryId`。
+声明行数组、它覆盖的内置行，以及可能的错误与诊断。其中 `rows` 占绝对大头：整张
+表共 **247** 条声明行，其中 **183** 条（74%）来自上面那两个 bundle（94 + 89，
+DSH 0.2.0-rc.2 实测），每条都带 `rowId`、`moduleName` 与实时的 `entryId`。投影
+之后，这两个 bundle 在 `list_bundles` 里各自只剩一行摘要 —— 声明行本身根本不会
+被序列化。
 
 由此引出两个后果，本插件分别应对：
 
@@ -66,7 +69,7 @@
 git clone https://github.com/deadbushxw/dsh-plugin-query-enhance "%USERPROFILE%\.dsh\dsh-plugins\dsh-plugin-query-enhance"
 ```
 
-任何目录都可以，上面的路径只是示例。没有构建步骤。
+任何目录都可以，上面的路径只是示例。没有**构建**步骤，但有一次**依赖安装**（见第 3 步）。
 
 ### 2. 装进一个 profile
 
@@ -86,7 +89,28 @@ git clone https://github.com/deadbushxw/dsh-plugin-query-enhance "%USERPROFILE%\
 `restart-required`，重启 DSH。用新代码替换已安装的包同样需要重启，因为 Host 会
 缓存模块实例。
 
-### 3. 确认它能用
+### 3. 安装运行时依赖
+
+本包有一个运行时依赖 `@deepseek-ai/schemastery`，它**不在**仓库里（见「有意不提交
+什么」）。**上面第一种安装方式（克隆到本地目录）需要这一步** —— 进克隆目录执行：
+
+```sh
+npm install --no-audit --no-fund
+```
+
+跳过它的后果是静默的：`install_bundle` 返回成功、`npm test` 也全绿，但插件不会
+装载 —— `lib/index.js` 静态导入的 `lib/schema.js` 解析不到依赖，模块加载整体失败，
+`apply()` 从未执行，于是投影与 `plugin_query` 一起失效，而且没有任何报错。一个可用
+的判据：`plugin_manager list_plugins` 里本条目是唯一 `enabled: true` 却
+`fiberPhase: null` 的条目（对照第 4 步）。
+
+补装依赖之后需要重启 DSH 才会重新装载：Node 的 ESM 模块缓存已记住那次加载失败，
+Loader 不会重试。
+
+走上面第二种方式（`github:` 仓库地址）不需要这一步：插件被装进 profile 自己的
+`node_modules`，而 profile 里已经有它需要的依赖。
+
+### 4. 确认它能用
 
 先请求 bundle 列表，看返回的形状：
 
@@ -95,11 +119,13 @@ plugin_manager list_bundles
 ```
 
 现在每条记录只带 `name`、`version`、`enabled`、`installed`、`optional`、
-`removable` 与 `rowCount`，没有 `rows` 数组、没有 `description`、没有 `meta`。
+`removable` 与 `rowCount`（只读时另有 `readOnlyReason`，有覆盖时另有
+`overrideCount`，出错时 `error` 退化为错误码字符串），没有 `rows` 数组、没有
+`description`、没有 `meta`。
 再问一个只有新工具能回答的问题：
 
 ```
-plugin_query match="cordis-plugin-hmr"
+plugin_query match="@deepseek-ai/dsh-plugin-manager"
 ```
 
 第一次回答是每个 bundle 一行、第二次回答指名了声明该模块的 bundle —— 两半都
@@ -120,12 +146,14 @@ plugin_manager remove_bundle dsh-plugin-query-enhance
 ### 现在 list 类调用回传什么
 
 动作本身没变，包括 `offset`、`limit`、`total` 与 `nextOffset`。只是每条记录更小。
-bundle 长这样：
+bundle 长这样（`plugin_manager list_bundles limit=1` 的返回，DSH 0.2.0-rc.2
+本机实测，为便于阅读折行）：
 
 ```json
-{"entries":[{"name":"@deepseek-ai/dsh-web-app","version":"0.1.2-alpha.1","enabled":true,
-"installed":false,"optional":false,"removable":false,"rowCount":85}],
-"total":11,"nextOffset":null}
+{"entries":[{"name":"@deepseek-ai/dsh-base","version":"0.2.0-rc.2","enabled":true,
+"installed":false,"optional":false,"removable":false,
+"readOnlyReason":"management-required","rowCount":94}],
+"total":21,"nextOffset":1}
 ```
 
 被去掉的字段，以及为什么可以去掉：
@@ -142,11 +170,13 @@ bundle 长这样：
 bundle 不声明任何插件"和"这份回答把声明行藏起来了"；`overrideCount` 仅在确有覆盖
 时出现。
 
-插件条目长这样：
+插件条目长这样（`plugin_manager list_plugins limit=1` 的返回，同一台机器，折行
+同上）：
 
 ```json
-{"entries":[{"entryId":"timer","moduleName":"@deepseek-ai/cordis-plugin-timer",
-"enabled":true,"fiberPhase":"active"}],"total":187,"nextOffset":25}
+{"entries":[{"entryId":"96732430","moduleName":"@deepseek-ai/dsh-host-directory-picker-native",
+"enabled":true,"fiberPhase":"active","readOnlyReason":"unaddressable"}],
+"total":202,"nextOffset":1}
 ```
 
 摘要唯一丢弃的字段是 `patchId`：它是寻址该条目的 profile patch 行 id，没有任何
@@ -181,14 +211,14 @@ bundle 声明的行，而 `list_plugins` 的摘要本身就是带 `entryId` 的�
 本包要避免的结果。
 
 每次回答都带 `total`（清单总量）、`matched`（通过筛选的数量）与 `nextOffset`。
-`total`/`matched` 这组字段让"零结果"不再有歧义：`matched: 0` 而 `total: 11` 意味着
+`total`/`matched` 这组字段让"零结果"不再有歧义：`matched: 0` 而 `total: 21` 意味着
 bundle 存在但被筛掉了，不必为了确认这一点再发一次不带条件的调用。
 
 示例：
 
 ```
 plugin_query name="@deepseek-ai/dsh-base"
-plugin_query match="cordis-plugin-hmr"          # 哪个 bundle 声明了这个模块？
+plugin_query match="@deepseek-ai/dsh-plugin-manager"   # 哪个 bundle 声明了这个模块？
 plugin_query enabled=false                        # 哪些是关闭的？
 plugin_query hasError=true detail="full"          # 某个东西为什么加载失败？
 plugin_query optional=true                        # 哪些是出厂关闭的？
@@ -267,7 +297,7 @@ tools/verify-repo-boundary.mjs   下文所述的边界自查脚本
 |---|---|
 | `DESIGN.md` | 内部工作稿。其中引用了撰写时所在机器的绝对目录，发布即泄露该机器的布局 |
 | `node_modules/` | 可由 `package.json` 复现；在 diff 里只是噪声 |
-| `package-lock.json`、`pnpm-lock.yaml`、`yarn.lock` | 安装由 DSH 的 `install_bundle`（pnpm）负责。多一份锁文件只会描述另一个解析器并造成漂移 |
+| `package-lock.json`、`pnpm-lock.yaml`、`yarn.lock` | 依赖由使用者在插件目录执行 `npm install` 负责（见「安装」第 3 步）。DSH 的 `install_bundle` 只负责 profile 自己的依赖，不会往 link 目标目录里装；多一份锁文件只会描述另一个解析器并造成漂移 |
 | `*.bak`、`*.orig`、`*.rej`、`*.log` | 编辑与安装过程中留下的本地临时产物 |
 | `config.json`、`plugin-data/`、`.env*`、`*.pem`、`*.key`、`.credentials.yaml` | 运行状态与凭据。本插件两样都没有，这些模式是第二道防线 |
 | 编辑器与系统噪声（`.vscode/`、`.DS_Store`、`Thumbs.db` 等） | 不属于本项目 |
@@ -296,8 +326,9 @@ npm run verify-boundary
 
 测试套件没有任何依赖，也没有副作用：它不碰文件系统、不联网、不接触 Host。这并非
 偶然 —— `lib/config.js` 刻意不 import 任何东西，唯一的运行时依赖单独放在
-`lib/schema.js`，因此测试所引入的模块都不需要解析依赖。只有当你想加载
-`lib/index.js` 本身时，才需要 `npm install`。
+`lib/schema.js`，因此测试所引入的模块都不需要解析依赖。`npm test` 因此不需要安装
+任何东西；但要让插件真的装载（或加载 `lib/index.js`），必须先 `npm install`（见
+「安装」第 3 步）。
 
 结构与拆分理由：
 
